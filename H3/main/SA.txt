@@ -1,0 +1,194 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+#include <cstdlib>
+#include <ctime>
+#include <iomanip>
+#include <limits>
+#include <random>
+
+using namespace std;
+
+struct City {
+    int id;
+    double x, y;
+};
+
+vector<City> parseTSPFile(const string& filePath) {
+    vector<City> cities;
+    ifstream file(filePath);
+    string line;
+    bool startReading = false;
+
+    if (!file.is_open()) {
+        cerr << "Eroare la deschiderea fișierului: " << filePath << endl;
+        return cities;
+    }
+
+    while (getline(file, line)) {
+        if (line == "NODE_COORD_SECTION") {
+            startReading = true;
+            continue;
+        }
+        if (line == "EOF") break;
+
+        if (startReading) {
+            stringstream ss(line);
+            int id;
+            double x, y;
+            ss >> id >> x >> y;
+            cities.push_back({ id, x, y });
+        }
+    }
+
+    file.close();
+    return cities;
+}
+
+vector<vector<double>> buildDistanceMatrix(const vector<City>& cities) {
+    int n = cities.size();
+    vector<vector<double>> distanceMatrix(n, vector<double>(n, 0.0));
+
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            if (i != j) {
+                double dx = cities[j].x - cities[i].x;
+                double dy = cities[j].y - cities[i].y;
+                distanceMatrix[i][j] = sqrt(dx * dx + dy * dy);
+            }
+        }
+    }
+
+    return distanceMatrix;
+}
+
+double calculateRouteDistance(const vector<int>& route, const vector<vector<double>>& distanceMatrix) {
+    double totalDistance = 0.0;
+    int n = route.size();
+    for (int i = 0; i < n - 1; ++i) {
+        totalDistance += distanceMatrix[route[i]][route[i + 1]];
+    }
+    totalDistance += distanceMatrix[route[n - 1]][route[0]];
+    return totalDistance;
+}
+
+vector<int> generateGreedyRoute(const vector<vector<double>>& distanceMatrix) {
+    int n = distanceMatrix.size();
+    vector<int> route;
+    vector<bool> visited(n, false);
+
+    int currentCity = rand() % n;
+    route.push_back(currentCity);
+    visited[currentCity] = true;
+
+    for (int i = 1; i < n; ++i) {
+        double minDist = numeric_limits<double>::max();
+        int nextCity = -1;
+        for (int j = 0; j < n; ++j) {
+            if (!visited[j] && distanceMatrix[currentCity][j] < minDist) {
+                minDist = distanceMatrix[currentCity][j];
+                nextCity = j;
+            }
+        }
+        route.push_back(nextCity);
+        visited[nextCity] = true;
+        currentCity = nextCity;
+    }
+
+    return route;
+}
+
+void twoOpt(vector<int>& route, const vector<vector<double>>& distanceMatrix) {
+    bool improved = true;
+    int maxImproves = 100;
+    int improvements = 0;
+
+    while (improved && improvements < maxImproves) {
+        improved = false;
+        int n = route.size();
+        for (int i = 0; i < n - 1; ++i) {
+            for (int j = i + 1; j < n; ++j) {
+                double currentDist = distanceMatrix[route[i]][route[(i + 1) % n]] +
+                    distanceMatrix[route[j]][route[(j + 1) % n]];
+                double newDist = distanceMatrix[route[i]][route[j]] +
+                    distanceMatrix[route[(i + 1) % n]][route[(j + 1) % n]];
+
+                if (newDist < currentDist) {
+                    reverse(route.begin() + i + 1, route.begin() + j + 1);
+                    improved = true;
+                    ++improvements;
+                }
+            }
+        }
+    }
+}
+
+pair<vector<int>, double> simulatedAnnealing(const vector<vector<double>>& distanceMatrix, double initialTemp, double coolingRate, int maxIterations) {
+    int n = distanceMatrix.size();
+    vector<int> currentRoute = generateGreedyRoute(distanceMatrix);
+    double currentCost = calculateRouteDistance(currentRoute, distanceMatrix);
+    vector<int> bestRoute = currentRoute;
+    double bestCost = currentCost;
+
+    double temperature = initialTemp;
+
+    for (int iteration = 0; iteration < maxIterations; ++iteration) {
+        vector<int> newRoute = currentRoute;
+        twoOpt(newRoute, distanceMatrix);
+        double newCost = calculateRouteDistance(newRoute, distanceMatrix);
+
+        if (newCost < currentCost || (rand() / double(RAND_MAX)) < exp((currentCost - newCost) / temperature)) {
+            currentRoute = newRoute;
+            currentCost = newCost;
+        }
+
+        if (currentCost < bestCost) {
+            bestRoute = currentRoute;
+            bestCost = currentCost;
+        }
+
+        temperature *= coolingRate;
+
+        if (iteration % 10 == 0) {
+            cout << "Iterația " << iteration << ": Cost minim = " << fixed << setprecision(2) << bestCost << endl;
+        }
+    }
+
+    return make_pair(bestRoute, bestCost);
+}
+
+int main() {
+    srand(time(0));
+
+    string filePath = "berlin52.tsp";
+    vector<City> cities = parseTSPFile(filePath);
+
+    if (cities.empty()) {
+        cerr << "Nu s-au putut citi datele din fișier." << endl;
+        return 1;
+    }
+
+    vector<vector<double>> distanceMatrix = buildDistanceMatrix(cities);
+
+    double initialTemp = 5000.0;
+    double coolingRate = 0.995;
+    int maxIterations = 1000;
+
+    auto result = simulatedAnnealing(distanceMatrix, initialTemp, coolingRate, maxIterations);
+    vector<int> bestRoute = result.first;
+    double bestCost = result.second;
+
+    cout << "\nCel mai bun cost minim: " << fixed << setprecision(2) << bestCost << endl;
+    cout << "Traseul optim: ";
+    for (int city : bestRoute) {
+        cout << city + 1 << " ";
+    }
+    cout << endl;
+
+    return 0;
+}

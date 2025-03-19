@@ -1,0 +1,271 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+#include <cstdlib>
+#include <ctime>
+#include <iomanip>
+#include <limits>
+#include <random>
+#include <thread>
+#include <mutex>
+#include <atomic>
+
+using namespace std;
+
+struct City {
+    int id;
+    double x, y;
+};
+
+vector<City> parseTSPFile(const string& filePath) {
+    vector<City> cities;
+    ifstream file(filePath);
+    string line;
+    bool startReading = false;
+
+    if (!file.is_open()) {
+        cerr << "Eroare la deschiderea fișierului: " << filePath << endl;
+        return cities;
+    }
+
+    while (getline(file, line)) {
+        if (line == "NODE_COORD_SECTION") {
+            startReading = true;
+            continue;
+        }
+        if (line == "EOF") break;
+
+        if (startReading) {
+            stringstream ss(line);
+            int id;
+            double x, y;
+            ss >> id >> x >> y;
+            cities.push_back({ id, x, y });
+        }
+    }
+
+    file.close();
+    return cities;
+}
+
+vector<vector<double>>* buildDistanceMatrix(const vector<City>& cities) {
+    size_t n = cities.size();
+    auto distanceMatrix = new vector<vector<double>>(n, vector<double>(n, 0.0));
+
+    vector<thread> threads;
+    size_t numThreads = thread::hardware_concurrency();
+    size_t chunkSize = n / numThreads;
+
+    for (size_t t = 0; t < numThreads; ++t) {
+        threads.emplace_back([&, t]() {
+            size_t start = t * chunkSize;
+            size_t end = (t == numThreads - 1) ? n : start + chunkSize;
+            for (size_t i = start; i < end; ++i) {
+                for (size_t j = 0; j < n; ++j) {
+                    if (i != j) {
+                        double dx = cities[j].x - cities[i].x;
+                        double dy = cities[j].y - cities[i].y;
+                        (*distanceMatrix)[i][j] = sqrt(dx * dx + dy * dy);
+                    }
+                }
+            }
+            });
+    }
+
+    for (auto& th : threads) th.join();
+    return distanceMatrix;
+}
+
+double calculateRouteDistance(const vector<int>& route, const vector<vector<double>>& distanceMatrix) {
+    double totalDistance = 0.0;
+    size_t n = route.size();
+    for (size_t i = 0; i < n - 1; ++i) {
+        totalDistance += distanceMatrix[route[i]][route[i + 1]];
+    }
+    totalDistance += distanceMatrix[route[n - 1]][route[0]];
+    return totalDistance;
+}
+
+vector<vector<int>> generateInitialPopulation(size_t populationSize, size_t n) {
+    vector<vector<int>> population(populationSize, vector<int>(n));
+    for (size_t i = 0; i < populationSize; ++i) {
+        iota(population[i].begin(), population[i].end(), 0);
+        random_shuffle(population[i].begin(), population[i].end());
+    }
+    return population;
+}
+
+double fitness(const vector<int>& route, const vector<vector<double>>& distanceMatrix) {
+    double distance = calculateRouteDistance(route, distanceMatrix);
+    return 10000.0 / distance;
+}
+
+void twoOptOptimization(vector<int>& route, const vector<vector<double>>& distanceMatrix) {
+    bool improved = true;
+    int n = route.size();
+
+    while (improved) {
+        improved = false;
+
+        for (int i = 0; i < n - 1; ++i) {
+            for (int j = i + 1; j < n; ++j) {
+                double currentDistance = distanceMatrix[route[i]][route[(i + 1) % n]] +
+                    distanceMatrix[route[j]][route[(j + 1) % n]];
+
+                double newDistance = distanceMatrix[route[i]][route[j]] +
+                    distanceMatrix[route[(i + 1) % n]][route[(j + 1) % n]];
+
+                if (newDistance < currentDistance) {
+                    reverse(route.begin() + i + 1, route.begin() + j + 1);
+                    improved = true;
+                }
+            }
+        }
+    }
+}
+
+vector<int> tournamentSelection(const vector<vector<int>>& population, const vector<double>& fitnessScores, int tournamentSize) {
+    size_t n = population.size();
+    vector<int> bestIndividual;
+    double bestFitness = -1.0;
+
+    for (int i = 0; i < tournamentSize; ++i) {
+        int randomIndex = rand() % n;
+        if (fitnessScores[randomIndex] > bestFitness) {
+            bestFitness = fitnessScores[randomIndex];
+            bestIndividual = population[randomIndex];
+        }
+    }
+
+    return bestIndividual;
+}
+
+vector<int> crossoverPMX(const vector<int>& parent1, const vector<int>& parent2) {
+    size_t n = parent1.size();
+    vector<int> child(n, -1);
+    int start = rand() % n;
+    int end = rand() % n;
+
+    if (start > end) swap(start, end);
+
+    for (int i = start; i <= end; ++i) child[i] = parent1[i];
+
+    for (int i = start; i <= end; ++i) {
+        if (find(child.begin(), child.end(), parent2[i]) == child.end()) {
+            int value = parent2[i];
+            int pos = i;
+            while (child[pos] != -1) {
+                pos = find(parent2.begin(), parent2.end(), parent1[pos]) - parent2.begin();
+            }
+            child[pos] = value;
+        }
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        if (child[i] == -1) child[i] = parent2[i];
+    }
+
+    return child;
+}
+
+void mutate(vector<int>& route) {
+    int i = rand() % route.size();
+    int j = rand() % route.size();
+    if (i > j) swap(i, j);
+    reverse(route.begin() + i, route.begin() + j + 1);
+}
+
+pair<vector<int>, double> geneticAlgorithm(const vector<vector<double>>& distanceMatrix, size_t populationSize, int generations, double mutationRate) {
+    size_t n = distanceMatrix.size();
+    vector<vector<int>> population = generateInitialPopulation(populationSize, n);
+
+    vector<int> bestRoute;
+    double bestDistance = numeric_limits<double>::max();
+    int stagnantGenerations = 0;
+
+    for (int generation = 0; generation < generations; ++generation) {
+        vector<vector<int>> newPopulation;
+        vector<double> fitnessScores(population.size());
+
+        for (size_t i = 0; i < population.size(); ++i) {
+            fitnessScores[i] = fitness(population[i], distanceMatrix);
+        }
+
+        auto maxIt = max_element(fitnessScores.begin(), fitnessScores.end());
+        int bestIndex = distance(fitnessScores.begin(), maxIt);
+        double currentDistance = calculateRouteDistance(population[bestIndex], distanceMatrix);
+
+        if (currentDistance < bestDistance) {
+            bestDistance = currentDistance;
+            bestRoute = population[bestIndex];
+            stagnantGenerations = 0;
+        }
+        else {
+            stagnantGenerations++;
+        }
+
+        newPopulation.push_back(population[bestIndex]);
+
+        while (newPopulation.size() < populationSize) {
+            vector<int> parent1 = tournamentSelection(population, fitnessScores, 5);
+            vector<int> parent2 = tournamentSelection(population, fitnessScores, 5);
+
+            vector<int> child = crossoverPMX(parent1, parent2);
+
+            if ((rand() / double(RAND_MAX)) < mutationRate) mutate(child);
+
+            twoOptOptimization(child, distanceMatrix);
+
+            newPopulation.push_back(child);
+        }
+
+        population = newPopulation;
+
+        if (generation % 10 == 0) {
+            cout << "Generatia " << generation << ": Cost minim = " << fixed << setprecision(4) << bestDistance << endl;
+        }
+
+        if (stagnantGenerations > 200) {
+            population = generateInitialPopulation(populationSize, n);
+            stagnantGenerations = 0;
+            cout << "Populatia a fost reimprospatata!" << endl;
+        }
+    }
+
+    return { bestRoute, bestDistance };
+}
+
+int main() {
+    srand(time(0));
+
+    string filePath = "berlin52.tsp";
+    vector<City> cities = parseTSPFile(filePath);
+
+    if (cities.empty()) {
+        cerr << "Nu s-au putut citi datele din fisier." << endl;
+        return 1;
+    }
+
+    auto distanceMatrix = buildDistanceMatrix(cities);
+
+    size_t populationSize = 100;
+    int generations = 500;
+    double mutationRate = 0.05;
+
+    auto result = geneticAlgorithm(*distanceMatrix, populationSize, generations, mutationRate);
+    vector<int> bestRoute = result.first;
+    double bestDistance = result.second;
+
+    cout << "\nCost minim: " << fixed << setprecision(4) << bestDistance << endl;
+    cout << "Traseul optim: ";
+    for (int city : bestRoute) cout << city + 1 << " ";
+    cout << endl;
+
+    delete distanceMatrix;
+    return 0;
+}
